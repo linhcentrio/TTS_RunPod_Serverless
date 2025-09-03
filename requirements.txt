@@ -1,0 +1,29 @@
+# requirements.txt - Thêm MinIO support
+runpod>=1.5.0
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6
+aiofiles>=23.2.0
+
+# OpenAI TTS
+openai>=1.3.0
+python-dotenv>=1.0.0
+
+# Edge TTS
+edge-tts>=6.1.0
+
+# Gemini TTS
+google-genai>=0.3.0
+
+# Audio processing
+pydub>=0.25.1
+librosa>=0.10.0
+soundfile>=0.12.0
+
+# MinIO Object Storage
+minio>=7.2.0
+
+# Utilities
+httpx>=0.25.0
+requests>=2.31.0
+asyncio-mqtt>=0.13.0
