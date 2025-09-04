@@ -18,7 +18,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy TTS modules và handler
 COPY openai_tts.py .
-COPY edge_tts.py .
+COPY ms_edge_tts.py .
 COPY gemini_tts.py .
 COPY tts_handler.py .
 
