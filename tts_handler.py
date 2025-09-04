@@ -2,7 +2,7 @@
 """
 RunPod Serverless Handler cho TTS Services - Non-GPU
 - Hỗ trợ: OpenAI TTS, EdgeTTS, Gemini TTS
-- Hỗ trợ đầy đủ tham số như các CLI gốc (OpenAI/Gemini) và tính năng list với EdgeTTS
+- Hỗ trợ đầy đủ tham số như CLI gốc (OpenAI/Gemini) và list voices cho Edge
 - Lưu file lên MinIO cố định và trả presigned/public URL
 """
 
@@ -25,16 +25,17 @@ from datetime import datetime, timedelta
 from minio import Minio
 from minio.error import S3Error
 
-# Mô-đun wrapper theo dự án (OpenAI/Gemini)
-from openai_tts import OpenAITTSCLI  # CLI gốc OpenAI hỗ trợ streaming with_streaming_response [14]
-from gemini_tts import GeminiTTSCLI   # CLI gốc Gemini hỗ trợ single/multi voices/styles [3]
+# Mô-đun wrapper theo dự án (giữ nguyên)
+from openai_tts import OpenAITTSCLI  # CLI gốc OpenAI (streaming) [2]
+from gemini_tts import GeminiTTSCLI   # CLI gốc Gemini (single/multi) [3]
 
-# Import EdgeTTS an toàn để tránh shadowing gói 'edge-tts' (khuyến nghị đổi tên file local thành ms_edge_tts.py)
+# EdgeTTS: ưu tiên module đã đổi tên để tránh shadowing package 'edge-tts'
 try:
-    from ms_edge_tts import EdgeTTS, quick_tts, VOICES as EDGE_VOICES  # Ưu tiên module đã đổi tên [1]
+    from ms_edge_tts import EdgeTTS, quick_tts, VOICES as EDGE_VOICES  # [1]
 except Exception:
-    import edge_tts as edge_api  # Fallback sang gói pip chính thức (có Communicate) [4][11]
-    EDGE_VOICES = {}  # Không có bảng rút gọn khi fallback [4][11]
+    # Fallback: import package edge-tts trực tiếp nếu không có file đổi tên
+    import edge_tts as edge_api  # class Communicate hợp lệ trong package chính [4]
+    EDGE_VOICES = {}
 
     class EdgeTTS:
         def __init__(self, voice: str = "vi-VN-HoaiMyNeural"):
@@ -60,14 +61,14 @@ except Exception:
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 logger = logging.getLogger("tts_handler")
 
-# MinIO cố định (có thể override qua ENV)
+# MinIO cố định (cho phép override qua ENV)
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "media.aiclip.ai")
 MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "VtZ6MUPfyTOH3qSiohA2")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "8boVPVIynLEKcgXirrcePxvjSk7gReIDD9pwto3t")
-MINIO_BUCKET = os.getenv("MINIO_BUCKET", "video")  # mặc định "video" để đồng nhất log trước đó
+MINIO_BUCKET = os.getenv("MINIO_BUCKET", "video")  # đồng nhất với logs gần đây
 MINIO_SECURE = os.getenv("MINIO_SECURE", "false").lower() == "true"
 
-# Presets instructions OpenAI (copy từ CLI gốc)
+# Presets instructions OpenAI (đồng bộ CLI gốc)
 OPENAI_INSTRUCTION_PRESETS = {
     "default": "Speak naturally and clearly",
     "cheerful": "Speak in a cheerful and positive tone",
@@ -85,7 +86,12 @@ OPENAI_INSTRUCTION_PRESETS = {
     "educational": "Speak like a teacher explaining concepts clearly",
 }  # [2]
 
-# Gemini voice/style/model danh sách như CLI gốc (không cần API key để trả list)
+# Danh sách OpenAI (không cần API key để trả list)
+OPENAI_MODELS = ["tts-1", "tts-1-hd", "gpt-4o-mini-tts"]  # [2]
+OPENAI_VOICES = ["alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer"]  # [2]
+OPENAI_FORMATS = ["mp3", "opus", "aac", "flac", "wav", "pcm"]  # [2]
+
+# Danh sách Gemini (không cần API key để trả list)
 GEMINI_VOICES = [
     "Zephyr", "Puck", "Charon", "Kore", "Fenrir", "Leda", "Orus", "Aoede",
     "Callirrhoe", "Autonoe", "Enceladus", "Iapetus", "Umbriel", "Algieba",
@@ -111,17 +117,8 @@ GEMINI_STYLES = {
     "motivational": "Speak like a motivational speaker with inspiration",
     "meditation": "Speak as a meditation guide with calm peaceful voice",
 }  # [3]
-GEMINI_MODELS = [
-    "gemini-2.5-pro-preview-tts",
-    "gemini-2.5-flash-preview-tts",
-]  # [3]
+GEMINI_MODELS = ["gemini-2.5-pro-preview-tts", "gemini-2.5-flash-preview-tts"]  # [3]
 
-# OpenAI options (không cần API key để trả list)
-OPENAI_MODELS = ["tts-1", "tts-1-hd", "gpt-4o-mini-tts"]  # [2]
-OPENAI_VOICES = ["alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer"]  # [2]
-OPENAI_FORMATS = ["mp3", "opus", "aac", "flac", "wav", "pcm"]  # [2]
-
-# TTS metadata
 TTS_SERVICES = {
     "openai": {"name": "OpenAI TTS", "requires_api_key": True},
     "edge": {"name": "Microsoft Edge TTS", "requires_api_key": False},
@@ -143,7 +140,7 @@ try:
 except Exception as e:
     logger.error(f"MinIO init failed: {e}")
 
-# Client cache
+# Cache
 tts_clients = {}
 
 def get_tts_client(service: str, api_key: str | None):
@@ -153,13 +150,13 @@ def get_tts_client(service: str, api_key: str | None):
     if service == "openai":
         if not api_key:
             raise ValueError("OpenAI API key required")
-        tts_clients[key] = OpenAITTSCLI(api_key=api_key)
+        tts_clients[key] = OpenAITTSCLI(api_key=api_key)  # [2]
     elif service == "edge":
-        tts_clients[key] = EdgeTTS()
+        tts_clients[key] = EdgeTTS()  # [1]
     elif service == "gemini":
         if not api_key:
             raise ValueError("Gemini API key required")
-        tts_clients[key] = GeminiTTSCLI(api_key=api_key)
+        tts_clients[key] = GeminiTTSCLI(api_key=api_key)  # [3]
     else:
         raise ValueError(f"Unsupported service: {service}")
     return tts_clients[key]
@@ -177,9 +174,7 @@ def ensure_bucket_and_upload(local_path: str, object_name: str) -> tuple[str, st
 
 def resolve_text_input(data: dict) -> tuple[str | None, str | None]:
     """
-    Hỗ trợ tương đương tham số CLI:
-    - 'text' (positional)
-    - 'input' (đường dẫn file/URL, serverless hỗ trợ URL http/https; nếu là chuỗi thường thì dùng trực tiếp)
+    Hỗ trợ: 'text' hoặc 'input' (URL http/https hoặc chuỗi trực tiếp)
     """
     if "input" in data and data["input"]:
         src = data["input"]
@@ -209,17 +204,22 @@ def resolve_text_input(data: dict) -> tuple[str | None, str | None]:
 
 # -------- OpenAI paths (đủ tham số CLI gốc) --------
 
-async def openai_generate_one(client: OpenAITTSCLI, params: dict, out_path: str) -> tuple[bool, str]:
+async def openai_generate_one(client: OpenAITTSCLI, params: dict, out_path: str, api_key: str | None) -> tuple[bool, str]:
+    """
+    Tạo 1 file với streaming API (with_streaming_response); nếu thất bại, chẩn đoán SDK/param để trả lỗi rõ ràng.
+    """
     try:
         text, err = resolve_text_input(params)
         if err:
             return False, err
+
         # preset_instructions -> instructions nếu chưa set
         instructions = params.get("instructions")
         if not instructions and params.get("preset_instructions"):
             preset = params["preset_instructions"]
             if preset in OPENAI_INSTRUCTION_PRESETS:
                 instructions = OPENAI_INSTRUCTION_PRESETS[preset]
+
         ok = await client.generate_speech(
             text=text,
             output_path=out_path,
@@ -229,13 +229,48 @@ async def openai_generate_one(client: OpenAITTSCLI, params: dict, out_path: str)
             instructions=instructions,
             response_format=params.get("response_format", "mp3"),
         )
-        if not ok:
-            return False, "OpenAI generate_speech returned False"
-        if not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
-            return False, "OpenAI file not created or empty"
-        return True, ""
+        if ok and os.path.exists(out_path) and os.path.getsize(out_path) > 0:
+            return True, ""
+
+        # Nếu return False, thực hiện chẩn đoán nhanh để trả lỗi cụ thể
+        diag = await _openai_diagnose(api_key, params)
+        return False, diag or "OpenAI generate_speech returned False"
+
     except Exception as e:
         return False, f"OpenAI error: {e}"
+
+async def _openai_diagnose(api_key: str | None, params: dict) -> str:
+    """
+    Cố gắng gọi trực tiếp streaming API nhỏ để bắt lỗi SDK/params (SDK cũ, model/voice sai, network).
+    """
+    try:
+        from openai import AsyncOpenAI  # xác nhận SDK sẵn sàng dùng streaming [5]
+    except Exception as e:
+        return f"OpenAI SDK import failed: {e}"
+
+    try:
+        if not api_key:
+            return "Missing OpenAI API key"
+        client = AsyncOpenAI(api_key=api_key)
+
+        # Text ngắn để test
+        mini_text = "hi"
+        model = params.get("model", "tts-1")
+        voice = params.get("voice", "alloy")
+        response_format = params.get("response_format", "mp3")
+
+        async with client.audio.speech.with_streaming_response.create(  # with_streaming_response theo docs [5]
+            model=model,
+            input=mini_text,
+            voice=voice,
+            response_format=response_format,
+        ) as resp:
+            async for _ in resp.iter_bytes():
+                break
+        return ""  # OK
+
+    except Exception as e:
+        return f"OpenAI streaming diagnostic error: {e}"
 
 async def openai_preview(client: OpenAITTSCLI, params: dict, out_path: str) -> tuple[bool, str]:
     try:
@@ -261,7 +296,7 @@ async def openai_preview(client: OpenAITTSCLI, params: dict, out_path: str) -> t
     except Exception as e:
         return False, f"OpenAI preview error: {e}"
 
-async def openai_batch(client: OpenAITTSCLI, params: dict, temp_dir: str, path_prefix: str) -> tuple[list[dict], list[dict]]:
+async def openai_batch(client: OpenAITTSCLI, params: dict, temp_dir: str, path_prefix: str, api_key: str | None) -> tuple[list[dict], list[dict]]:
     texts = []
     if isinstance(params.get("batch"), list):
         texts = params["batch"]
@@ -276,7 +311,7 @@ async def openai_batch(client: OpenAITTSCLI, params: dict, temp_dir: str, path_p
         one["text"] = t
         fname = params.get("output") or f"openai_{i+1}_{uuid.uuid4().hex[:6]}.{ofmt}"
         local = os.path.join(temp_dir, fname)
-        ok, err = await openai_generate_one(client, one, local)
+        ok, err = await openai_generate_one(client, one, local, api_key)
         if not ok:
             results_fail.append({"index": i, "error": err})
             continue
@@ -350,6 +385,7 @@ def validate_input(job_input: dict) -> tuple[bool, str]:
     srv = job_input["service"].lower()
     if srv not in TTS_SERVICES:
         return False, f"Invalid service '{srv}'"
+
     if srv == "openai":
         if "model" in job_input and job_input["model"] not in OPENAI_MODELS:
             return False, "Invalid OpenAI model"
@@ -386,17 +422,15 @@ def validate_input(job_input: dict) -> tuple[bool, str]:
             return False, "Invalid Gemini style"
     return True, "OK"
 
-# -------- Handler --------
+# -------- Helper mapping CLI -> MinIO path --------
 
 def object_prefix(service: str, data: dict) -> str:
-    # Hỗ trợ 'output_dir' (từ CLI) để map vào prefix MinIO nếu truyền vào
     user_dir = data.get("output_dir")
     date_dir = datetime.now().strftime('%Y/%m/%d')
     base = f"tts/{service}/{date_dir}"
-    return f"{base}/{user_dir.strip('/')} " if user_dir else base
+    return f"{base}/{user_dir.strip('/')}" if user_dir else base
 
 def infer_filename(default_name: str, data: dict, expected_ext: str) -> str:
-    # Hỗ trợ 'output' (từ CLI) làm tên file nếu có; nếu không, sinh ngẫu nhiên
     out = data.get("output")
     if out:
         name = Path(out).name
@@ -404,6 +438,8 @@ def infer_filename(default_name: str, data: dict, expected_ext: str) -> str:
             name = f"{name}.{expected_ext}"
         return name
     return default_name
+
+# -------- Handler --------
 
 async def handler(job: dict):
     job_id = job.get("id", f"job_{uuid.uuid4().hex[:8]}")
@@ -425,7 +461,6 @@ async def handler(job: dict):
         if service == "openai" and data.get("list_instructions"):
             return {"status": "completed", "job_id": job_id, "instruction_presets": OPENAI_INSTRUCTION_PRESETS}
         if service == "edge" and data.get("list"):
-            # Trả danh sách VOICES rút gọn nếu có, nếu không chỉ trả gợi ý voice chuẩn
             return {"status": "completed", "job_id": job_id, "voices": list(EDGE_VOICES.values()) or ["vi-VN-HoaiMyNeural"]}
         if service == "gemini" and data.get("list_voices"):
             return {"status": "completed", "job_id": job_id, "voices": GEMINI_VOICES}
@@ -441,7 +476,7 @@ async def handler(job: dict):
 
             # OpenAI batch
             if service == "openai" and "batch" in data:
-                success_items, fail_items = await openai_batch(client, data, tmp, prefix)
+                success_items, fail_items = await openai_batch(client, data, tmp, prefix, api_key)
                 return {
                     "status": "completed" if success_items else "failed",
                     "job_id": job_id,
@@ -471,12 +506,12 @@ async def handler(job: dict):
                     "processing_time_seconds": round(time.time() - t0, 2),
                 }
 
-            # Single file theo service
+            # Single file
             if service == "openai":
                 ofmt = data.get("response_format", "mp3")
                 file_name = infer_filename(f"openai_tts_{uuid.uuid4().hex[:8]}.{ofmt}", data, ofmt)
                 local = os.path.join(tmp, file_name)
-                ok, err = await openai_generate_one(client, data, local)
+                ok, err = await openai_generate_one(client, data, local, api_key)
                 if not ok:
                     return {
                         "status": "failed",
@@ -565,15 +600,15 @@ def health_check() -> tuple[bool, str]:
     except Exception as e:
         issues.append(f"MinIO init error: {e}")
     try:
-        from openai import AsyncOpenAI  # Kiểm tra import SDK [14]
+        from openai import AsyncOpenAI  # kiểm tra SDK sẵn sàng streaming [5]
     except Exception as e:
         issues.append(f"openai import failed: {e}")
     try:
-        EdgeTTS()  # Kiểm tra khởi tạo EdgeTTS [4]
+        EdgeTTS()  # kiểm tra EdgeTTS khởi tạo [1]
     except Exception as e:
         issues.append(f"EdgeTTS init failed: {e}")
     try:
-        from google import genai  # Kiểm tra import Gemini [3]
+        from google import genai  # kiểm tra Gemini import [3]
     except Exception as e:
         issues.append(f"google-genai import failed: {e}")
     if issues:
