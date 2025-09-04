@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 MINIO_ENDPOINT = "media.aiclip.ai"
 MINIO_ACCESS_KEY = "VtZ6MUPfyTOH3qSiohA2"
 MINIO_SECRET_KEY = "8boVPVIynLEKcgXirrcePxvjSk7gReIDD9pwto3t"
-MINIO_BUCKET = "tts-audio"
+MINIO_BUCKET = "video"
 MINIO_SECURE = False
 
 # Initialize MinIO client với error handling
